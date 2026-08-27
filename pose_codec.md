@@ -103,8 +103,8 @@ implementations). Each is one smallest-three `u32`.
 
 | LOD | When | Contents | Size |
 |---|---|---|---|
-| 0 | <5 m, ≤8 nearest | 55 bone rotations | 12 + 220 = **232 B** |
-| 1 | <20 m | first 22 bone rotations (body, no fingers) | 12 + 88 = **100 B** |
+| 0 | a peer within ~6 m | 55 bone rotations (body + eyes/jaw + fingers) | 12 + 220 = **232 B** |
+| 1 | otherwise | first 22 bone rotations (body, no fingers) | 12 + 88 = **100 B** |
 | 2 | >20 m | head rotation + 2 hand positions | 12 + 4 + 12 = **28 B** |
 
 At LOD2 the receiver reconstructs arms with two-bone IK from the hand positions and leaves
@@ -116,25 +116,53 @@ only a handful at LOD0.
 
 ## Canonical bone order
 
-Index 0-21 are the body bones sent at LOD1; 22-54 are fingers, LOD0 only. The order is fixed
-forever — inserting a bone is a v2 change, not a patch.
+Index 0-21 are the body bones sent at LOD1; 22-24 are the remaining body bones and 25-54 are
+fingers, both LOD0 only. The order is fixed forever — inserting a bone is a v2 change, not a
+patch.
 
 ```
- 0 Hips             11 LeftLowerArm      22 LeftThumbProximal
- 1 Spine            12 LeftHand          23 LeftThumbIntermediate
- 2 Chest            13 RightShoulder     24 LeftThumbDistal
- 3 UpperChest       14 RightUpperArm     25 LeftIndexProximal
- 4 Neck             15 RightLowerArm     … (per-finger proximal/intermediate/distal,
- 5 Head             16 RightHand             left hand then right hand)
- 6 LeftUpperLeg     17 LeftToes          54 RightLittleDistal
- 7 LeftLowerLeg     18 RightToes
- 8 LeftFoot         19 LeftEye
- 9 RightUpperLeg    20 RightEye
-10 RightFoot        21 Jaw
+ 0 hips             14 leftLowerArm      28 leftIndexProximal
+ 1 spine            15 leftHand          29 leftIndexIntermediate
+ 2 chest            16 rightShoulder     30 leftIndexDistal
+ 3 upperChest       17 rightUpperArm     31 leftMiddleProximal
+ 4 neck             18 rightLowerArm     32 leftMiddleIntermediate
+ 5 head             19 rightHand         33 leftMiddleDistal
+ 6 leftUpperLeg     20 leftToes          34 leftRingProximal
+ 7 leftLowerLeg     21 rightToes         35 leftRingIntermediate
+ 8 leftFoot         ── LOD0 only ──      36 leftRingDistal
+ 9 rightUpperLeg    22 leftEye           37 leftLittleProximal
+10 rightLowerLeg    23 rightEye          38 leftLittleIntermediate
+11 rightFoot        24 jaw               39 leftLittleDistal
+12 leftShoulder     25 leftThumbProximal 40-54 right hand, same five
+13 leftUpperArm     26 leftThumbInterm.        fingers in the same order,
+                    27 leftThumbDistal        ending 54 rightLittleDistal
 ```
 
-This matches the VRM 1.0 humanoid bone set, so `godot-vrm` imports map onto it without a
-translation table.
+25 body bones + 30 finger bones = 55, which is exactly the VRM 1.0 humanoid set, so `godot-vrm`
+imports map onto it without a translation table.
+
+> **This table was previously wrong** and is corrected here to match the shipped codec. It listed
+> eyes and jaw at 19-21 and omitted RightLowerLeg, LeftShoulder and LeftUpperArm, so its indices
+> 10-21 disagreed with what both implementations actually encode. Eyes and jaw sit at 22-24
+> — *after* the LOD1 prefix — precisely because LOD1 has shipped: a LOD1 frame is defined as the
+> first 22 entries of this table, and moving anything below index 22 would silently reinterpret
+> every pose frame in the field.
+
+**The bone order is not enforced by the golden corpus.** The relay decodes a pose frame only to
+validate it and to read the root position for AOI; it forwards the payload opaquely and never
+learns what any bone *is*. Slot 30 means `leftIndexDistal` solely because both ends of the wire
+are the same client reading the same table, so a reordering here would leave every golden vector
+byte-identical while wiring a remote avatar's fingers to its eyes. The client therefore freezes
+the order in its own test suite (`game/Net/Codec/Tests/BoneOrderTests.cs`) alongside the byte
+layout. Treat that file as part of this specification.
+
+### Which LOD a sender picks
+
+A client sends **one** pose frame per tick and the relay fans it out to every peer in range, so
+the LOD cannot be chosen per receiver the way the table above suggests. The sender picks: it
+upgrades to LOD0 while any peer is within conversational distance (~6 m) and the local rig
+actually has finger bones, and stays at LOD1 otherwise. Rigs with no finger bones never upgrade,
+since LOD0 would spend 132 extra bytes a frame transmitting 30 identity quaternions.
 
 ## Voice frames
 
